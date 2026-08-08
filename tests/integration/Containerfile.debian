@@ -1,0 +1,31 @@
+# Throwaway Debian box with a real systemd PID 1, for VIDE's integration tier.
+#
+# What is baked here is exactly the set of facts VIDE's preflight treats as
+# "apt cannot fix them" plus the two floor tools it refuses to install:
+#
+#   systemd + systemd-sysv  -> a real /sbin/init, so `systemctl enable --now`,
+#                              `is-active` and `journalctl -u` answer truthfully.
+#                              The base image has NEITHER; without systemd-sysv
+#                              there is no /sbin/init and the container exits.
+#   dbus                    -> systemd's private bus comes up clean (less noise).
+#   iproute2 (ss), openssl  -> the preflight tool floor VIDE refuses without.
+#   ca-certificates         -> TLS for the three upstream installers.
+#
+# Deliberately NOT baked: curl, git, argon2. install.sh's ensure_prereqs installs
+# them (install.sh:105-120), and letting it do so is part of the contract under
+# test — a bare-ish box proving the apt path still works. Baking them would hide
+# a regression in exactly the code that runs first on a fresh VM.
+#
+# apt lists are cleaned because ensure_prereqs runs `apt-get update` itself.
+FROM debian:13
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus iproute2 openssl ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    test "$(readlink -f /sbin/init)" = /usr/lib/systemd/systemd
+
+# SIGRTMIN+3 is systemd's "shut down now"; without it `podman stop` waits out the
+# full timeout on every teardown.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

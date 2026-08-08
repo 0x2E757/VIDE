@@ -1,0 +1,124 @@
+[Unit]
+Description=oauth2-proxy SSO gateway socket (VIDE — reserves the fleet's authorization port from boot)
+# WHY THIS UNIT EXISTS. The fleet's sole authorization hop used to be a loopback
+# port that nothing reserved: any local account — no VIDE instance, no role, no
+# sudo — could bind it whenever oauth2-proxy was not holding it, and then answer
+# the forward_auth sub-request for EVERY instance on the box. Under SSO
+# code-server runs `auth: none`, so an unconditional 202 opens every IDE to
+# anyone who knows a hostname, and every instance's forward_auth hands that
+# process the fleet cookie on every request. The windows were `upgrade-sso`,
+# `rotate-sso`, every crash loop, and every boot.
+#
+# systemd binds this address as PID 1 and keeps holding it for the lifetime of
+# THIS unit, which has a lifecycle of its own. The service inherits the
+# descriptor (`http_address = "fd:3"` in proxy.toml) and never binds anything
+# itself, so the address survives the proxy stopping, crashing, crash-looping,
+# being SIGKILLed, or being compromised and exiting to hand the port to an
+# accomplice.
+#
+# DELIBERATELY NO Wants=/After=network-online.target, and that split IS the fix.
+# The SERVICE needs DNS before it can start (OIDC discovery — see the .service),
+# so it necessarily starts late. The BIND needs nothing but loopback, so it
+# happens at sockets.target, which bootup(7) places before basic.target and
+# therefore before any login session, cron job or lingering user unit exists.
+# The boot window in which the authorization port was free is exactly the gap
+# between those two moments, and this unit is what fills it.
+#
+# A FAILED SOCKET UNIT CLOSES ITS DESCRIPTORS. socket_set_state() calls
+# socket_close_fds() for every state outside the listening set, and SOCKET_FAILED
+# is outside it — so anything that fails this unit hands the port straight back
+# to whoever is waiting for it. There are three ways to fail it and all three are
+# disabled — TWO OF THEM HERE (StartLimitIntervalSec= and TriggerLimitIntervalSec=
+# below) and THE THIRD IN THE SERVICE: `service-start-limit-hit` is prevented by
+# StartLimitIntervalSec=0 in units/oauth2-proxy.service, because it is the
+# SERVICE's limiter firing that reaches back through socket_trigger_notify() and
+# fails this unit. Naming it here matters: an editor who reads only this file
+# sees two disabled limiters and a sentence claiming three, and the missing one
+# lives in a file they have no reason to open.
+# Verified in systemd's src/core/socket.{h,c} at v249 and v259 — the whole span
+# VIDE supports — and unchanged between them.
+StartLimitIntervalSec=0
+# Result string this prevents: `start-limit-hit` (the socket's OWN limiter,
+# default 5 starts / 10s). Reachable in practice, not in theory: the service's
+# Requires= re-attempts this unit on every auto-restart once it is down, and an
+# operator recovering by hand restarts it more than five times in ten seconds
+# without trying. A socket unit has no Restart=, so there is no runaway loop this
+# limiter protects against — it can only ever fire on recovery.
+
+[Socket]
+ListenStream=127.0.0.1:__VIDE_PROXY_PORT__
+# EXACTLY ONE ListenStream=, forever. `fd:3` in proxy.toml is an INDEX, not a
+# name: oauth2-proxy computes `fdIndex = fd - SD_LISTEN_FDS_START` and takes that
+# position out of the list systemd passed, in the order the ListenStream=
+# directives appear. A second one (an IPv6 twin, a metrics port) shifts the index
+# and repoints the fleet's authorization gate at the wrong socket WITH NO ERROR.
+# The named form `fd:NAME` is not a way out: upstream returns "fd with name is
+# not implemented yet", so FileDescriptorName= buys nothing here.
+#
+# The LITERAL address, never a bare port: `ListenStream=4180` binds [::]:4180 —
+# the whole internet — and this is the one unit on the box where that mistake is
+# not recoverable by a reload. [::1] is deliberately NOT reserved: it would be
+# that second ListenStream=. Every Caddy block VIDE renders names the literal
+# 127.0.0.1, so nothing VIDE emits dials the address that is left free.
+Accept=no
+# Written out although it is the default, because Accept=yes would pass a
+# CONNECTION descriptor per client to a Type=exec service: net.FileListener would
+# refuse it and systemd would fork one proxy per request.
+TriggerLimitIntervalSec=0
+# Result string this prevents: `trigger-limit-hit`. The default is 20 activations
+# per 2 seconds for Accept=no, and systemd's own words are that on hitting it
+# "the socket unit is placed into a failure mode, and will not be connectible
+# anymore until restarted" — i.e. the fd closes, on precisely the crash loop this
+# whole unit exists for. A single code-server page load exceeds 20 forward_auth
+# sub-requests, so this is not an adversarial number.
+#
+# NOT PollLimitIntervalSec=/PollLimitBurst=, which have exactly the semantics one
+# would want here (throttle temporarily, never fail the unit): they arrived in
+# systemd 255 — checked against systemd.socket(5), "Added in version 255" — so
+# Ubuntu 24.04 (255) and Debian 13 (257) have them while Ubuntu 22.04 (249) and
+# Debian 12 (252) would emit `Unknown key name`. The DECISION is unchanged: a
+# warning on `systemctl status` for the box's most security-critical unit, on
+# half the supported fleet, is worse than the churn it saves. The version number
+# was wrong here for three rounds, which is why it now cites its source.
+Backlog=1024
+# Explicit because the DEFAULT MOVED across the distros VIDE supports: SOMAXCONN
+# (128) on systemd 249, and 4294967295-capped-by-net.core.somaxconn (4096) on
+# 252+. While the service is restarting the descriptor stays open and requests
+# QUEUE instead of being refused, so this number is how many of Caddy's
+# forward_auth sub-requests survive the gap. Pinned so the behaviour is the same
+# on every supported box.
+#
+# AND EDITING THIS NUMBER DOES NOT CHANGE THE RUNNING SOCKET. It is an argument
+# to listen(2), taken when the descriptor is created — systemd calls
+# socket_address_listen(..., s->backlog, ...) from socket_open_fds(), whose loop
+# begins by SKIPPING every port that already has one. A `daemon-reload` re-claims
+# the existing descriptor and never re-enters that call, so the number here and
+# the number in the kernel can differ indefinitely with every manager-side signal
+# green: `systemctl show -p Backlog` reports the new value while the accept queue
+# keeps the old one. It lands only at a start from a CLOSED state — a reboot, or
+# a deliberate stop/start — and never at a converge, which is why VIDE's own
+# installer says so at the writer too.
+#
+# The same is true of every [Socket] property consumed at bind or listen time:
+# ReceiveBuffer=, KeepAlive*, FreeBind=, NoDelay=, IPTOS=, Priority=. It is NOT
+# true of the two limiters above or of the ordering in [Unit] — those are
+# manager-side and do apply on a reload. That split is the whole reason this
+# paragraph is here rather than being folded into the one above.
+#
+# DELIBERATELY ABSENT, and each absence is load-bearing:
+#   ReusePort=        SO_REUSEPORT lets a SECOND process bind this same address
+#                     alongside systemd. It would reopen the exact hole this unit
+#                     closes, and it would do it silently.
+#   StopWhenUnneeded= would stop the socket whenever the service is not running,
+#                     i.e. free the port during the crash loop.
+#   BindIPv6Only=     meaningless for a literal IPv4 address; it applies only to
+#                     the bare-port form, which must never be used here.
+#   FileDescriptorName= oauth2-proxy cannot address descriptors by name (above).
+#   RemoveOnStop=     no filesystem node exists; this is a TCP socket.
+
+[Install]
+WantedBy=sockets.target
+# sockets.target, not multi-user.target. Being pulled in by the service's
+# Requires= is NOT equivalent: it would bind at multi-user.target time instead,
+# silently downgrading an early-boot reservation to a late one. The enable and
+# the Requires= cover different windows and both are kept.

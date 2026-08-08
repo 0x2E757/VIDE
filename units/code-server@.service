@@ -1,0 +1,190 @@
+[Unit]
+Description=code-server for %i (VIDE)
+Documentation=https://coder.com/docs/code-server
+# No network-online.target dependency: code-server binds loopback only, so it needs
+# no routable network — gating on network-online would only delay first start on
+# hosts with no *-wait-online service enabled.
+# Stop a bad config from hammering: 5 restarts, then land in 'failed' where
+# `vide status` can surface it. The window must exceed 5 WHOLE cycles or the
+# fifth start never falls inside it, the burst limit is never reached, and a
+# permanently broken instance restarts forever instead of failing — the exact
+# outcome this pair exists to prevent. A whole cycle is bounded by three declared
+# numbers and nothing else: TimeoutStartSec is the ceiling on the start (our own
+# refusal fires at 45s, well inside it), TimeoutStopSec the ceiling on the stop,
+# RestartSec the gap. 5 x (45 + 20 + 3) = 340 < 400. This was 300 while the
+# refusal path cost ~0s; the freeze made the start able to take 45s, which is
+# what put the arithmetic in play.
+StartLimitIntervalSec=400
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=%i
+# Root-owned per-instance binding authority (VIDE_PORT= for password mode,
+# VIDE_MODE=sso + VIDE_SOCKET= for socket mode). '-' tolerates absence on first
+# boot.
+EnvironmentFile=-/etc/vide/%i.env
+# Per-instance runtime dir for the SSO unix socket (all modes; empty and
+# harmless for password instances). Recreated on every start, removed on stop —
+# the default RuntimeDirectoryPreserve=no is LOAD-BEARING, now for two reasons,
+# so do NOT add RuntimeDirectoryPreserve=. It is what wipes a stale socket; and
+# since the freeze below hands this directory to root, it is also what hands it
+# BACK to %i for the next bind. A preserved directory would stay root-owned, the
+# launcher's `rm -f -- "$VIDE_SOCKET"` would die under `set -euo pipefail`, and
+# the instance would crash-loop with nothing saying why.
+RuntimeDirectory=vide/%i
+# 0700, not 0750. Nothing traverses this directory but root and — after the freeze
+# below hands it to root:vide-proxy — caddy. The group bits were sized for the
+# retired setgid mechanism, and while the directory is still the instance user's
+# they are her PRIMARY group's: on a stock Debian/Ubuntu box that is a
+# user-private group and means nothing, but on a box with USERGROUPS_ENAB no, or
+# any directory-managed account shape, it is a shared group and 0750 would hand
+# every member of it a shell as this instance for the length of the start.
+RuntimeDirectoryMode=0700
+# The freeze below waits up to 45s for the socket and then FAILS the unit, so the
+# start job needs headroom above that. Pinned explicitly rather than left at the
+# 90s default: at the default a budget raised without thinking turns our named
+# refusal into an unattributable systemd timeout, and the operator reads systemd's
+# sentence instead of ours.
+TimeoutStartSec=120
+# Bounded for the arithmetic above, not because a stop was ever observed to hang:
+# left at the 90s default, one wedged shutdown makes a cycle longer than
+# StartLimitIntervalSec/5 and the burst limit silently stops applying. code-server
+# exits promptly on SIGTERM, so 20s is slack rather than a deadline.
+TimeoutStopSec=20
+# SSO socket group mechanism: code-server has no --socket-group, so it binds the
+# socket with the user's PRIMARY gid; the relabel below gives it vide-proxy, and
+# that explicit chgrp is the mechanism, not a fallback for one.
+# THE GROUP GRANT AND THE FREEZE ARE THE SAME STEP, AND THAT ORDERING IS THE
+# SECOND HALF OF THE CONTROL. An earlier draft group-owned the directory
+# vide-proxy and set it setgid FIRST, so the socket would inherit the group at
+# bind(2). That is a tidier mechanism and it opened a window: from unit start
+# until the chown, the directory was `2750 <user>:vide-proxy` — Caddy could
+# already traverse it and the instance user still owned it. She controls the
+# ExecStart binary ($HOME/.local/bin/code-server, see code-server-launch), so she
+# can hold that window open for the whole budget, plant a symlink at the socket
+# path, and make one request to her own hostname; Caddy follows it, and because
+# Caddy pools connections per upstream ADDRESS the connection outlives the
+# refusal that then fails the unit. Granting traversal only AFTER root owns the
+# directory and the path has been verified closes it: until then vide-proxy is
+# not a member of anything here, so there is nothing for Caddy to walk.
+# This runs as ExecStartPOST, not Pre: systemd re-asserts the RuntimeDirectory
+# owner/mode for the main ExecStart, which would UNDO a Pre chgrp — a Post chgrp
+# lands after that and sticks. '+' runs as root (chown needs it); a no-op when
+# VIDE_SOCKET is unset (password mode) — $$ is systemd's literal-$ escape, so SH
+# (not systemd) expands ${VIDE_SOCKET}. The bounded wait below is the PRIMARY
+# path, not a rare race — Type=exec completes the start job the moment execve()
+# succeeds, so the socket does not exist yet when ExecStartPost begins. NEVER
+# Group=vide-proxy on this unit: it would group-own every file the user writes
+# through the IDE.
+# THE FREEZE. This gets the socket's
+# PATH out of the instance user's hands, and it — not the relabel it guards — is
+# the security control.
+# Until the chown lands, /run/vide/%i is owned by that user, so `0700` restricts
+# third parties and restricts the OWNER NOT AT ALL: every entry in it is theirs
+# to unlink and rename (the launcher's own `rm -f` is the proof that VIDE relies
+# on exactly that), and they may chmod the directory back to 0777 whenever they
+# like. Caddy re-resolves `reverse_proxy unix//run/vide/%i/code-server.sock` on
+# EVERY connection, so a symlink planted at that name minutes after start points
+# the operator's internet-facing Caddy wherever the user says: another instance's
+# auth: none IDE (a shell as that user), or /run/caddy/admin.sock — the very
+# remedy docs/sso.md makes mandatory, whose 0200 caddy:caddy mode is exactly what
+# connect(2) needs FROM THE CADDY UID, i.e. from the one process doing the
+# bridging. `chown root` is the only thing that closes it. Removing the owner's
+# write bit cannot: the owner of a directory can always chmod it back.
+# THE ORDER IS THE PROOF, and every step of it is load-bearing:
+#   * the path-equality guard first — the freeze targets $D while every later
+#     check reads $VIDE_SOCKET out of /etc/vide/%i.env. A record naming anything
+#     else would put the relabel back on an unfrozen path, i.e. re-arm the whole
+#     bug by a hand edit. The two are pinned to each other before anything moves.
+#   * NOTHING touches the directory's group or mode before the wait. It stays as
+#     systemd made it — 0700 <user>:<primary> — so no OTHER account and no group
+#     is handed traversal by us during the window. READ THE NEXT SENTENCE BEFORE
+#     TRUSTING THAT: it is a narrowing, NOT a closure. She owns the directory
+#     until the chown, and the owner of a directory can always chmod it — `chmod
+#     o+x` hands `caddy` the walk as `other`, with no group membership involved.
+#     What this removes is the version where VIDE hands Caddy that walk for her,
+#     for 45 seconds, on every start. What remains is a window she must open
+#     herself and hold, and she can: the ExecStart binary is hers. The residual is
+#     stated in docs/threat-model.md and SECURITY.md rather than papered over, and
+#     the only thing that closes it is moving the path Caddy dials into a
+#     directory she never owns.
+#   * the wait is READINESS, not security. Every predicate is racy while the user
+#     owns the directory; `-e` only decides when to stop waiting.
+#   * chown BEFORE chmod — after the chown the user cannot chmod, so the mode we
+#     then set is final. The other order leaves a root-owned 0777 directory if
+#     they widened it a millisecond earlier.
+#   * root:vide-proxy, not root — this is where Caddy's traversal is granted, and
+#     it is granted to a directory root already owns. It also overrides whatever
+#     group she may have chgrp'd it to while it was hers.
+#   * chmod 2750 comes from here and not from an earlier step. Setgid is now
+#     inert (nothing is created in this directory after the socket) and the mode
+#     is asserted for one reason: to narrow what she may have widened. Linux does
+#     not clear setgid on a DIRECTORY during chown — ATTR_KILL_SUID/SGID is added
+#     only `if (!S_ISDIR(inode->i_mode))` (fs/open.c, chown_common) — so the order
+#     of these two is about the mode, never about the bit.
+#   * the SECOND test is the authoritative one, and it is durable because the
+#     path can no longer change under us — so it and the chgrp/chmod after it
+#     have stopped being a TOCTOU pair. Before the freeze they were one, and both
+#     mutations dereference: /etc/shadow at 0660 root:vide-proxy was one swap away.
+#   * `%%h == 1` and `%%U == %i` are not belt-and-braces either. `[ -S ] && [ ! -L ]`
+#     is TRUE of a HARD LINK, and renameat2(RENAME_EXCHANGE) installs one
+#     atomically — so type alone was never enough, and the ownership half closes
+#     the same family a second time without depending on fs.protected_hardlinks,
+#     a sysctl VIDE does not set. `%%` is systemd's literal-% escape: written
+#     `%U`, stat's format would be eaten by systemd's own %U specifier and the
+#     comparison would silently become a constant.
+#   * and the format deliberately does NOT include stat's `%%F`. That field is
+#     gettext-TRANSLATED — on a box whose /etc/default/locale sets a German LANG,
+#     which systemd exports into every service, `stat -c %F` on a socket prints
+#     `Socket`, not `socket`. Comparing it would refuse every SSO start on that
+#     box and blame an attack that never happened, and no tier would ever see it
+#     because they all run under C. It is redundant anyway: `[ -S ]` already
+#     says socket and `[ ! -L ]` already says not-a-symlink, in the shell, in no
+#     language. `%%U` is a name from NSS and `%%h` a number; neither is
+#     translated. Do not "improve" this by adding the type back.
+#   * the settle sleep — code-server chmods the socket to --socket-mode AFTER
+#     bind (see code-server-launch), and after the freeze it can no longer resolve
+#     its own socket path (no x on the dir for `other`). Freezing inside that
+#     window would hand it EACCES on its own chmod.
+# EVERY ARM EXITS EXPLICITLY, INCLUDING EXHAUSTION. This used to fall out of the
+# loop with `sleep 0.3` as the last command and `sh` exiting 0 — a silent
+# fail-OPEN byte-indistinguishable from success in the journal. A failed
+# ExecStartPost fails the unit; Restart=on-failure retries; the start limit above
+# lands it in 'failed' where `vide status` says so. That is the trade this makes
+# on purpose: a box too slow to bind now loses an instance LOUDLY instead of
+# serving an unfrozen one quietly. The two failure messages are deliberately
+# distinct — "never appeared" (slow box) and "not a plain socket owned by %i"
+# (someone swapped it) demand opposite responses, and the journal line is the
+# ONLY durable evidence there will be: RuntimeDirectoryPreserve=no wipes the
+# attacker's artefact at the next stop.
+# THE BUDGET: 150 x 0.3s = 45s. Two ceilings, both real. It stays under
+# TimeoutStartSec (pinned to 120 above), or systemd kills the start job and the
+# failure reads as a timeout instead of as this refusal. And 5 x (45 + TimeoutStopSec
+# 20 + RestartSec 3) = 340s stays under StartLimitIntervalSec=400, or the burst
+# limit is never reached and a permanently stuck instance restarts forever instead
+# of landing in 'failed'. The STOP half of that sum is the one an earlier draft
+# left out: a cycle is start + stop + gap, and at the 90s TimeoutStopSec default
+# one wedged shutdown was enough to make the limit stop applying.
+# THIS MUST STAY THE LAST Exec* COMMAND THE START JOB RUNS. systemd re-runs its
+# exec-directory setup before EVERY Exec* command and chowns RuntimeDirectory back
+# to User= — recursively, socket included (systemd#12713). One more ExecStartPost=
+# after this one silently undoes the whole freeze, and nothing would say so.
+ExecStartPost=+/bin/sh -c 'test -z "$${VIDE_SOCKET}" && exit 0; D=/run/vide/%i; if [ "$${VIDE_SOCKET}" != "$$D/code-server.sock" ]; then echo "VIDE: refusing to start — VIDE_SOCKET is $${VIDE_SOCKET}, not $$D/code-server.sock; the directory this unit can freeze is not the one Caddy would dial" >&2; exit 1; fi; n=0; while [ "$$n" -lt 150 ]; do [ -e "$${VIDE_SOCKET}" ] && break; n=$$((n+1)); sleep 0.3; done; if [ ! -e "$${VIDE_SOCKET}" ]; then echo "VIDE: code-server did not bind $${VIDE_SOCKET} within 45s — refusing to leave $$D writable by %i" >&2; exit 1; fi; sleep 0.3; chown root:vide-proxy "$$D" || exit 1; chmod 2750 "$$D" || exit 1; if [ ! -S "$${VIDE_SOCKET}" ] || [ -L "$${VIDE_SOCKET}" ] || [ "$$(stat -c "%%U %%h" "$${VIDE_SOCKET}")" != "%i 1" ]; then echo "VIDE: $${VIDE_SOCKET} is not a plain singly-linked socket owned by %i (found: $$(stat -c "%%U %%h %%N" "$${VIDE_SOCKET}" 2>/dev/null)) — the path was swapped before root could freeze it; refusing to relabel. This unit is the ONLY record of it: the directory is wiped at the next stop. If Caddy served any request to this instance meanwhile it may still be pooling a connection to whatever the path pointed at — restart caddy too. See docs/threat-model.md" >&2; exit 1; fi; chgrp vide-proxy "$${VIDE_SOCKET}" || exit 1; chmod 0660 "$${VIDE_SOCKET}" || exit 1'
+# Launcher wrapper (not the binary directly): for a SYSTEM unit the %h specifier
+# resolves to /root, not the User=%i account's home — the wrapper resolves $HOME,
+# which systemd DOES set from the passwd entry, to find each user's binary.
+ExecStart=/usr/local/lib/vide/code-server-launch
+Restart=on-failure
+RestartSec=3
+# Bias the OOM killer toward the IDE so a runaway build kills its own instance
+# before sshd / journald / the operator's way back in. VIDE never touches sshd's
+# score; keep this clearly positive.
+OOMScoreAdjust=500
+# Per-unit journald rate limit so one crash-looping instance can't evict every
+# other instance's (and sshd's) log history.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=10000
+
+[Install]
+WantedBy=multi-user.target

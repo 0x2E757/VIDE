@@ -1,0 +1,13 @@
+# Throwaway Ubuntu box with a real systemd PID 1. See Containerfile.debian for the
+# reasoning behind every package; it applies verbatim. Ubuntu's base image also
+# ships no /sbin/init, so systemd-sysv is installed explicitly rather than assumed.
+FROM ubuntu:24.04
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus iproute2 openssl ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    test "$(readlink -f /sbin/init)" = /usr/lib/systemd/systemd
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

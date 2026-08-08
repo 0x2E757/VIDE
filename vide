@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# VIDE management CLI shim. This exact path is deployed contract: link_cli
+# symlinks /usr/local/bin/vide here, and pre-rewrite boxes already carry that
+# symlink — the path may never become a directory (exec would fail with a
+# cryptic "Is a directory"), which is why the Python package lives in src/.
+#
+# The management CLI never apt-installs anything (it must stay runnable
+# non-root for `ls`/`doctor`); bootstrap belongs to the installer alone.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)"
+command -v python3 >/dev/null 2>&1 \
+  || { printf 'ERROR python3 not found — run: sudo %s/install.sh (it bootstraps python3)\n' "$here" >&2; exit 69; }
+
+# Same gate as install.sh: an ancient system python3 must refuse HERE with the
+# real story, not die lines later on a SyntaxError inside the package.
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+  || { printf 'ERROR VIDE needs Python >= 3.10 (found: %s)\n' "$(python3 -V 2>&1)" >&2; exit 78; }
+
+# THE SECOND DOOR. install.sh argues, at length and correctly, that the
+# authoritative Python gate cannot be the only one: python3 runs FROM
+# "$here/src", so a gate living there would be reading its own attacker's code.
+# That argument applies word for word to THIS file — it is the door every root
+# management verb comes through, /usr/local/bin/vide symlinks to it, and for a
+# long time it had no half at all, which made "VIDE refuses to start from an
+# untrusted checkout" true of one entry point and not the other.
+#
+# The block below is install.sh's, duplicated VERBATIM and pinned byte-identical
+# by a test. Duplicated and not sourced, for the reason above: a shared helper
+# file would live in the tree being judged. It gates itself on EUID 0, so
+# `vide ls` and `vide doctor` stay runnable non-root exactly as before.
+# >>> VIDE-CHECKOUT-GATE (byte-identical in install.sh and vide)
+gate_dry=0
+[[ "${VIDE_DRY_RUN:-}" == 1 ]] && gate_dry=1
+for a in "$@"; do [[ "$a" == --dry-run ]] && gate_dry=1; done
+
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+  trusted=(0)
+  [[ -n "${SUDO_UID:-}" ]] && trusted+=("$SUDO_UID")
+
+  # Echoes a reason when a third party could write <path>; silent when safe.
+  # NOT a bare group-writable refusal: Debian and Ubuntu default to umask 002
+  # AND user-private groups, so a plain `git clone` is 0775 alice:alice and a
+  # naive check would refuse this file's own documented invocation. A private
+  # group (gid == owner, no supplementary members) is the one safe case; every
+  # other group-writable tree is refused here and resolved exactly by the
+  # Python gate.
+  _untrusted() {
+    local p=$1 st u g m t ok=0 members
+    st=$(stat -c '%u %g %a' "$p" 2>/dev/null) || return 0
+    read -r u g m <<<"$st"
+    for t in "${trusted[@]}"; do [[ "$u" == "$t" ]] && ok=1; done
+    if (( ! ok )); then
+      printf 'is owned by uid %s, which is not root and not the sudo caller' "$u"
+      return 0
+    fi
+    if (( (8#$m) & 0002 )); then
+      printf 'is world-writable (mode %s)' "$m"
+      return 0
+    fi
+    if (( (8#$m) & 0020 )); then
+      members=$(getent group "$g" 2>/dev/null | cut -d: -f4)
+      if [[ "$g" != "$u" || -n "$members" ]]; then
+        printf 'is group-writable (mode %s) by a group that is not private to its owner' "$m"
+        return 0
+      fi
+    fi
+    return 0
+  }
+
+  gate_paths=()
+  # Ancestors: a 0755 tree inside a 0777 directory can be renamed out from
+  # under root, so /tmp/vide is refused however tidy the tree itself is.
+  p="$here"
+  while [[ "$p" != "/" ]]; do gate_paths+=("$p"); p=$(dirname -- "$p"); done
+  gate_paths+=("/")
+  for n in install.sh vide .env; do
+    [[ -e "$here/$n" ]] && gate_paths+=("$here/$n")
+  done
+  # WALK src and units; never a list of them. The list had three holes at once —
+  # `src/vide` missing from the Python half, `src/vide/tui` missing from BOTH
+  # (it is imported as root on every wizard install), and `__pycache__` from
+  # either — because an enumeration has to be extended whenever a subpackage is
+  # added and nobody adding one is thinking about this file. The predicate is
+  # unchanged; only the path set grows, so a stock 0775 alice:alice clone still
+  # passes exactly as before.
+  while IFS= read -r p; do gate_paths+=("$p"); done < <(
+    find -P "$here/src" "$here/units" 2>/dev/null)
+
+  for p in "${gate_paths[@]}"; do
+    why=$(_untrusted "$p")
+    if [[ -n "$why" ]]; then
+      if (( gate_dry )); then
+        printf 'WARN  preflight (dry-run): untrusted checkout: %s %s\n' "$p" "$why" >&2
+      else
+        printf 'ERROR refusing to run from an untrusted checkout: %s %s.\n' "$p" "$why" >&2
+        printf 'ERROR VIDE executes this tree as root. Move the clone somewhere only root can write (e.g. /opt/vide-src).\n' >&2
+        exit 78
+      fi
+    fi
+  done
+  # A symlinked .env says nothing about who can repoint it.
+  if [[ -L "$here/.env" ]]; then
+    if (( gate_dry )); then
+      printf 'WARN  preflight (dry-run): untrusted checkout: %s/.env is a symlink\n' "$here" >&2
+    else
+      printf 'ERROR refusing to run from an untrusted checkout: %s/.env is a symlink.\n' "$here" >&2
+      exit 78
+    fi
+  fi
+fi
+# <<< VIDE-CHECKOUT-GATE
+
+# -B: never write .pyc files. A poisoned __pycache__ left behind while the tree
+# was briefly writable is loaded in preference to the reviewed .py — PEP 552's
+# default invalidation is the source's mtime and size, carried in the .pyc's own
+# header, and an attacker who could write the tree can forge both. -B stops this
+# run from CREATING that artifact; it does not stop CPython from reading one that
+# is already there, which is exactly why the gate's remedy names the directory
+# rather than implying that fixing modes fixes contents.
+exec python3 -B "$here/src/vide/__main__.py" "$@"

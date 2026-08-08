@@ -1,0 +1,35 @@
+# Per-invocation config (may name a target user / FQDN) — never committed.
+.env
+
+# Defensive: nothing secret-bearing should ever be in the repo. All secrets are
+# generated on-box outside the repo tree (/etc/vide, ~/.config/code-server), but
+# ignore these patterns in case anything is ever copied here by mistake.
+*.pass
+config.yaml
+*.key
+*.pem
+
+# Python and tooling caches. VIDE has nothing to build and no dependencies to
+# install, but pyproject.toml ships mypy/pyright config and running it writes here.
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Test scratch
+tests/tmp/
+
+# Editor and OS droppings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local working notes. The repo records outcomes and contracts, not the work log
+# — every load-bearing decision's rationale lives in the source doc-comment it
+# describes, so notes about how it got there stay off the tree.
+.claude/
+.expertum/
+.memosyne/

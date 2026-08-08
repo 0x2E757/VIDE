@@ -1,0 +1,123 @@
+[Unit]
+Description=oauth2-proxy SSO gateway (VIDE, shared by all SSO instances)
+# The listening address is NOT bound here. vide-oauth2-proxy.socket binds it as
+# PID 1 at sockets.target and this service inherits the descriptor
+# (`http_address = "fd:3"` in proxy.toml). See that unit for why.
+#
+# Requires=, not Wants=, for three reasons and all three are wanted:
+#   * FAIL CLOSED AND ATTRIBUTABLE. Without it, `systemctl start` on a box whose
+#     socket is down starts the proxy, which dies with "fd outside of range of
+#     available file descriptors" and crash-loops. With it, the service simply is
+#     not started.
+#   * IT COMPLETES THE MIGRATION BY ITSELF. On a fleet provisioned before the
+#     socket unit existed, a plain `systemctl restart vide-oauth2-proxy.service`
+#     stops the old TCP-binding process, pulls the socket in, orders it first,
+#     and starts the proxy on the inherited descriptor. No new verb needed.
+#   * THE COST, WRITTEN DOWN BECAUSE IT IS SHARP: Requires= propagates in the
+#     other direction too, so `systemctl restart vide-oauth2-proxy.socket` takes
+#     the fleet's gate down and back up. No VIDE code path may ever `stop` or
+#     `restart` the socket unit; a census test pins that.
+# The After= is redundant — systemd already orders a socket before the service it
+# activates — and is written anyway, because the guarantee is load-bearing and a
+# reader should not have to know that rule to trust this file.
+Requires=vide-oauth2-proxy.socket
+After=vide-oauth2-proxy.socket
+# The issuer is needed AT STARTUP, not per-request: oauth2-proxy performs OIDC
+# Discovery while initialising and exits 1 if the provider is unreachable
+# (provider.go -> main.go "Failed to initialise OAuth2 Proxy"). Observed on a real
+# boot, 2026-07-27 — this unit previously claimed the opposite. So it is ordered
+# after the network, UNLIKE units/code-server@.service, which really does bind
+# loopback and need no upstream to start.
+Wants=network-online.target
+After=network-online.target
+# The ordering alone is not enough: on a host with no *-wait-online service
+# enabled, network-online.target is reached trivially and proves nothing about
+# DNS. The restart budget is the actual guarantee — runway for a slow resolver,
+# because with no IP-whitelist the proxy is the SOLE gate, and a proxy that gives
+# up after a reboot locks every user out of every instance on the box while the
+# IDEs themselves come back healthy.
+#
+# THE LIMITER IS OFF, AND THE REASON IS NOT THE RESOLVER — IT IS THE PORT.
+# This was StartLimitIntervalSec=300 / StartLimitBurst=20 with RestartSec=5:
+# ~100s of runway, after which a genuinely bad config landed in 'failed' where
+# `vide status` surfaced it. Under socket activation, landing in 'failed' means
+# GIVING THE FLEET'S AUTHORIZATION ADDRESS AWAY. The chain is four links, all of
+# them in systemd's own source and identical at v249 and v259:
+#   1. the service exhausts StartLimitBurst, so `start_limit_hit` is set on the
+#      Unit — by ANY start request, and a Restart= auto-restart is one;
+#   2. socket_trigger_notify() on the socket reads that flag and calls
+#      socket_enter_stop_pre(s, SOCKET_FAILURE_SERVICE_START_LIMIT_HIT);
+#   3. the socket lands in SOCKET_FAILED, journalled as
+#      `vide-oauth2-proxy.socket: Failed with result 'service-start-limit-hit'`;
+#   4. socket_set_state() calls socket_close_fds() for that state — the port is
+#      free, and a socket unit has no Restart=, so nothing takes it back.
+# An ORDINARY service failure does NOT do this: socket_trigger_notify returns the
+# socket to LISTENING. It is specifically the start-LIMIT flag. So "the proxy
+# crashed" was always safe and "the proxy crashed 20 times" was not — and a bad
+# proxy.env, an IdP outage, or the slow resolver this very comment is about all
+# reach 20 unaided, in about 100 seconds, with nobody attacking anything.
+#
+# So the limiter is off, and the runway becomes UNBOUNDED rather than shorter:
+# the proxy that needed a 21st try now recovers, and "gave up after a reboot"
+# stops being reachable at all. What is given up is OBSERVABILITY, not runway — a
+# permanently broken proxy now rests in `activating (auto-restart)` instead of
+# `failed`, so `vide doctor` reports NRestarts to keep it loud. Do not "restore"
+# these numbers without reading that row and this comment.
+#
+# If a bounded start limit is ever needed here again, the escape hatch is to
+# decouple the units: `Service=` in [Socket] naming a trivial RemainAfterExit
+# reservation unit, with this service still inheriting fd 3 by name match. That
+# costs a third unit, a third converge path and a third doctor row, which is why
+# it is named here rather than taken.
+StartLimitIntervalSec=0
+# No dependency edges to instance units or caddy in EITHER direction — caddy
+# mediates, and a proxy restart must never restart IDEs.
+
+[Service]
+Type=exec
+User=vide-oauth2
+# Deliberately NO Group=vide-proxy: the proxy never touches instance sockets
+# (forward_auth topology), so keep it out — least privilege, and the group's
+# meaning stays "may connect to instance sockets".
+EnvironmentFile=/etc/vide/sso/proxy.env
+ExecStart=/opt/vide/oauth2-proxy/current/oauth2-proxy --config /etc/vide/sso/proxy.toml
+Restart=always
+RestartSec=5
+# `always`, not `on-failure`, and it is not tidiness. on-failure leaves one
+# resting state that is not covered: a clean exit(0). oauth2-proxy has no reason
+# to take one today, but this process is the fleet's sole authorization gate and
+# a compromised one CHOOSES its exit code — under on-failure, exiting 0 is a way
+# to stop the gate permanently and quietly. Nothing here is load-bearing for the
+# port (PID 1 holds that regardless); it closes the "gate silently absent" state.
+# It is NOT the fix for the start-limit chain — the limiter counts starts however
+# they arise, which is why StartLimitIntervalSec=0 is set above.
+# Hardening: a root-of-trust network daemon with a tiny, known footprint
+# (static Go binary). MemoryDenyWriteExecute is safe for Go (no JIT).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=10000
+
+[Install]
+WantedBy=multi-user.target

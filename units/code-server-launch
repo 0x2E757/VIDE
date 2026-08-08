@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# VIDE launcher wrapper, run by the systemd template unit as User=%i.
+# systemd sets $HOME/$USER from the passwd entry, so we resolve the per-user
+# standalone binary via $HOME here (the unit's %h specifier would wrongly be
+# /root for a system service). VIDE_PORT comes from /etc/vide/<user>.env.
+set -euo pipefail
+
+bin="$HOME/.local/bin/code-server"
+[[ -x "$bin" ]] || { echo "VIDE: code-server binary not found at $bin" >&2; exit 69; }
+
+# code-server integrated terminals are non-login (they never source
+# /etc/profile.d), so give the whole code-server process the per-user pnpm home
+# by sourcing the SINGLE source of truth — the VIDE-managed profile drop-in —
+# rather than duplicating its logic here.
+if [ -r /etc/profile.d/vide-pnpm.sh ]; then
+  . /etc/profile.d/vide-pnpm.sh
+fi
+
+# Flags shared by both bindings, built once so the two exec lines cannot drift.
+#
+# --app-name replaces the {{app}} placeholder (title bar, welcome message); it is
+# branding only and carries no behaviour.
+#
+# Workspace Trust is DISABLED BY DEFAULT and that is a deliberate weakening of a
+# security control, recorded here rather than buried: with it off, opening a
+# folder runs that folder's tasks, debug configs and extension code with no
+# prompt. The judgement is that on a VIDE box the operator already holds a
+# sudo-capable shell in the same session, so the prompt is a speed bump rather
+# than containment — but it IS a speed bump, and the knob restores it. Set
+# VIDE_WORKSPACE_TRUST=1 in /etc/vide/<user>.env to keep the prompts.
+# Deliberately read from the environment ONLY: VIDE never writes this key, so the
+# per-instance record's shape (contract.PORT_RECORD / SOCKET_RECORD) is unchanged
+# and no durable artifact moves for a default nobody overrode.
+common_args=(--app-name VIDE)
+if [[ "${VIDE_WORKSPACE_TRUST:-0}" != "1" ]]; then
+  common_args+=(--disable-workspace-trust)
+fi
+
+if [[ -n "${VIDE_SOCKET:-}" ]]; then
+  # SSO / socket mode. Stale-socket defense: code-server EADDRINUSEs over a
+  # leftover socket and does not clean up on shutdown. Normally moot —
+  # RuntimeDirectory is wiped on unit stop — but cheap and future-proof. Runs as
+  # the user; the dir is user-owned 0700 at this point so this needs no root.
+  # code-server chmods the socket to --socket-mode after bind, and the
+  # microsecond default-mode window is contained by that 0700: nothing but root
+  # traverses this directory until the unit's ExecStartPost takes it and grants
+  # caddy the walk explicitly. It used to be 2750 group-owned vide-proxy here,
+  # which meant caddy could already walk a directory this user owned — see the
+  # freeze's comment in code-server@.service.
+  rm -f -- "$VIDE_SOCKET"
+  exec "$bin" \
+    --socket "$VIDE_SOCKET" \
+    --socket-mode 0660 \
+    "${common_args[@]}" \
+    --config "$HOME/.config/code-server/config.yaml"
+fi
+
+: "${VIDE_PORT:?VIDE_PORT missing from /etc/vide/${USER}.env}"
+
+exec "$bin" \
+  --bind-addr "127.0.0.1:${VIDE_PORT}" \
+  "${common_args[@]}" \
+  --config "$HOME/.config/code-server/config.yaml"

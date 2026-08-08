@@ -1,0 +1,6 @@
+# Everything VIDE ships is text that executes or is byte-compared on Linux.
+# Pin LF at the git layer so a Windows checkout (core.autocrlf=true) cannot
+# smuggle CRLF into the bash shims (install.sh, vide, tests/*.sh) or into
+# files the parity tier byte-compares. The repo tracks no binaries today;
+# if one ever lands, mark it `-text` here explicitly.
+* text=auto eol=lf

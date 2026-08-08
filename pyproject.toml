@@ -1,0 +1,21 @@
+# Advisory local tooling ONLY — target boxes never run any of this and the
+# unittest runner must not import it. The floor pin (3.10 = Ubuntu 22.04's
+# system python3) is what catches 3.11+ API creep that would pass on the dev
+# interpreter and die on the oldest supported distro.
+#
+# NOT strict, honestly: Config builds its attributes from the Setting schema
+# at runtime (one source for defaults/.env.example/--help), which is opaque to
+# static checkers — `strict = true` here would be a gate that can never pass.
+# The attribute-level safety Config loses statically is pinned dynamically by
+# tests/unit/test_config.py + test_invariants.py instead.
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+files = ["src/vide"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pyright]
+pythonVersion = "3.10"
+include = ["src/vide"]

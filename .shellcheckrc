@@ -1,0 +1,5 @@
+# Follow `. tests/support/report.sh` into the file it sources.
+external-sources=true
+
+# SC2155 (declare-and-assign masks the return value, defeating `set -e`) is kept
+# ON deliberately — it is a real correctness gate for this tool. Do not disable.
