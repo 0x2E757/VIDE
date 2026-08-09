@@ -12,7 +12,9 @@ expect breaking changes between commits and no guaranteed upgrade path. Run it
 on a box you can reprovision.
 
 ```bash
-command -v git >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y git; }
+# prerequisites — git fetches this tree; Caddy is the reverse proxy SSO mode requires
+command -v git   >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y git; }
+command -v caddy >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y caddy; }
 sudo git clone https://github.com/0x2E757/VIDE /opt/vide-src
 cd /opt/vide-src
 sudo ./install.sh                 # interactive terminal → the curses wizard
@@ -282,12 +284,14 @@ tests/manual/           # the two human gates: wizard rendering, real-Google SSO
   upstream Node.js and code-server ship no standalone binary for 32-bit ARM
   (`armv7l`, e.g. 32-bit Raspberry Pi OS), `i686`, or `riscv64`.
 - **Privilege:** run as root (via sudo).
-- **A reverse proxy, which you supply and VIDE never installs or edits.** In
-  password mode any proxy will do — VIDE only prints a snippet. **SSO mode
-  structurally requires Caddy**, because `vide allow`/`revoke` rewrite a Caddy
-  config file and reload it through Caddy's admin API on `127.0.0.1:2019`, and
-  the `caddy` user must be in the `vide-proxy` group to reach the instance
-  sockets. **What VIDE renders is valid Caddy 2.6.2** — the oldest version
+- **A reverse proxy, which you supply and VIDE never installs or edits.** The
+  quick start's prerequisite line apt-installs Caddy when it is absent — that
+  is still you supplying it, before `install.sh` runs; no VIDE code installs a
+  proxy. In password mode any proxy will do — VIDE only prints a snippet.
+  **SSO mode structurally requires Caddy**, because `vide allow`/`revoke`
+  rewrite a Caddy config file and reload it through Caddy's admin API on
+  `127.0.0.1:2019`, and the `caddy` user must be in the `vide-proxy` group to
+  reach the instance sockets. **What VIDE renders is valid Caddy 2.6.2** — the oldest version
   Debian and Ubuntu still ship — and it stays inside that dialect on purpose: a
   directive from a later Caddy would fail your *entire* config, VIDE's sites and
   everyone else's. Nothing probes your Caddy's version, so this is a floor VIDE
@@ -300,7 +304,7 @@ tests/manual/           # the two human gates: wizard rendering, real-Google SSO
   or `iproute2`.
 - **Installed for you** if absent: `python3` (by `install.sh`, before anything
   else runs), then `argon2`, `curl`, `git` (also installed by the quick start's
-  own first line when absent — a stock cloud image may arrive without it, and
+  prerequisite line when absent — a stock cloud image may arrive without it, and
   `install.sh` cannot install the tool that fetches `install.sh`),
   `ca-certificates`, `sudo`, and `libatomic1` (pnpm's standalone binary links
   against it; Node does not, so a box without it installs Node and then fails
