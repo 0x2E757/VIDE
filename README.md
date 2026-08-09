@@ -28,6 +28,14 @@ sudo ./install.sh --no-gui --user alice --fqdn vide.example.com   # scripted
 the editor (see below), and prints a ready Caddy snippet. Re-running is safe and
 idempotent.
 
+```bash
+# make it reachable — paste the snippet into your Caddyfile, then restart caddy:
+# restart, not reload — an SSO caddy's vide-proxy membership is read at start.
+# DNS for your fqdn must already point at this box; TLS is then Caddy's business.
+sudo nano /etc/caddy/Caddyfile    # re-emit the snippet anytime: vide info <user>
+sudo systemctl restart caddy
+```
+
 **Clone somewhere only you or root can write** — `/opt/vide-src` above, or your
 own home; `/tmp` is not, and neither is anywhere an instance user can reach. VIDE runs
 this tree as root, because whoever can edit the checkout owns your next
