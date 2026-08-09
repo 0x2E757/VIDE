@@ -90,12 +90,14 @@ def _emit_tcp_snippet(user: str, port: int, fqdn: str = "") -> str:
         # add `header_up Host ...`; rewriting Host to 127.0.0.1 makes the editor
         # render but never connect ("Invalid Host/Origin").
         #
-        # stream_close_delay keeps long-lived WebSockets (integrated terminal +
-        # extension host) alive across a `caddy reload`. Without it Caddy closes
-        # every streaming WebSocket on each config reload — including reloads
-        # triggered by UNRELATED sites in a shared Caddy — so terminals drop with
-        # no error the user can attribute, whenever the operator/automation reloads.
-        stream_close_delay 30m
+        # `stream_close_delay 30m` is deliberately NOT here. It would keep the
+        # editor's WebSockets (terminal, extension host) alive across a
+        # `caddy reload`, but the directive exists only from Caddy 2.7.0 — and
+        # VIDE renders the 2.6.2 dialect stock Debian/Ubuntu apt installs,
+        # where one unknown subdirective fails your ENTIRE config at startup.
+        # On Caddy >= 2.7 you may add it here yourself; without it, expect any
+        # caddy reload (yours or automation's) to drop live terminals.
+        #
         # flush_interval -1 disables response buffering so interactive terminal
         # output is flushed immediately.
         flush_interval -1
@@ -423,7 +425,10 @@ def render_forward_auth_body(user: str, emails: list[str], parent_domain: str,
     }}
     handle {{
         reverse_proxy unix/{socket} {{
-            stream_close_delay 30m
+            # stream_close_delay is deliberately absent: it exists only from
+            # Caddy 2.7.0, and VIDE stays inside the 2.6.2 dialect. This file
+            # is converge-owned — a hand-added directive is gone at the next
+            # converge — so under SSO a caddy reload drops live terminals.
             flush_interval -1
         }}
     }}

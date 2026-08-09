@@ -299,9 +299,20 @@ class TestCaddySnippet(unittest.TestCase):
     def test_contract_lines(self) -> None:
         s = caddy.emit_snippet("bob", 9797, "vide.example.com")
         self.assertIn("reverse_proxy 127.0.0.1:9797", s)
-        self.assertIn("stream_close_delay 30m", s)
         self.assertIn("flush_interval -1", s)
         self.assertIn("vide.example.com {", s)
+
+    def test_stream_close_delay_stays_out_of_the_262_dialect(self) -> None:
+        # stream_close_delay would keep the editor's WebSockets alive across
+        # `caddy reload`, but it exists only from Caddy 2.7.0 — and the first
+        # stock-apt caddy (Debian 13's 2.6.2) this render ever met refused to
+        # START over it, failing the operator's entire config (2026-08-09).
+        # The string may appear in comments that explain the trade, never as a
+        # directive; it may return only together with the documented floor.
+        for line in caddy.emit_snippet("bob", 9797).splitlines():
+            if "stream_close_delay" in line:
+                self.assertTrue(line.lstrip().startswith("#"),
+                                f"stream_close_delay left the comment: {line!r}")
 
     def test_placeholder_without_fqdn(self) -> None:
         s = caddy.emit_snippet("bob", 9797)

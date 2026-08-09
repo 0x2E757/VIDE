@@ -123,6 +123,18 @@ rather than quietly deleted above, because a fixture that was once derived and
 then confirmed is a different thing from one that was captured — and the next
 reader deciding how far to trust this file is owed the difference.
 
+**Re-blessed 2026-08-09, DERIVED from the template edit — to be confirmed by
+the next observed run.** The snippet dropped `stream_close_delay 30m` and
+gained the comment that says why: the directive exists only from Caddy 2.7.0,
+and the first stock-apt caddy the rendered config ever met (Debian 13's 2.6.2)
+refused to START over it, failing the operator's entire Caddyfile. No automated
+tier parses the render with 2.6.2 — the sso-mode gate pins 2.11.4 — which is
+how the false "valid Caddy 2.6.2" claim survived from the day the directive
+landed. Only the `=== snippet (normalized) ===` section moved. podman is absent
+on the machine this landed on, so the hunk is computed from the template, not
+observed; the next parity run either confirms it byte-for-byte or corrects it,
+and that run should update this note.
+
 ## Scope
 
 The parity tier pins the debian shape only, and a shape can be equal-but-wrong by

@@ -238,7 +238,18 @@ class TestVidePage(unittest.TestCase):
     def test_the_editor_still_gets_everything_else(self) -> None:
         body = self._body()
         self.assertIn("reverse_proxy unix//run/vide/alice/code-server.sock", body)
-        self.assertIn("stream_close_delay 30m", body)
+        self.assertIn("flush_interval -1", body)
+
+    def test_stream_close_delay_stays_out_of_the_262_dialect(self) -> None:
+        # The password snippet's pin, repeated for the SSO body — with a sharper
+        # edge: this file is converge-owned, so an operator on Caddy >= 2.7
+        # cannot even add the directive back by hand. If it ever returns here,
+        # it returns for the whole fleet on whatever caddy the box runs, and
+        # 2.6.2 (stock Debian/Ubuntu apt) refuses to start over it.
+        for line in self._body().splitlines():
+            if "stream_close_delay" in line:
+                self.assertTrue(line.lstrip().startswith("#"),
+                                f"stream_close_delay left the comment: {line!r}")
 
 
 class TestAuthBlockRoot(unittest.TestCase):

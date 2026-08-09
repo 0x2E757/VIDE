@@ -28,6 +28,8 @@ O2P_PIN=7.15.3                    # pinned per run: the gate must not race upstr
 O2P_PREV=7.15.2                   # the floor version — upgrade-sso walks PREV -> PIN
 CADDY_VER=2.11.4
 CADDY_SHA=527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9
+CADDY_FLOOR_VER=2.6.2             # README's dialect floor — validates only, never serves
+CADDY_FLOOR_SHA=5af0ee65a0220108b7b96322b0418abcda526d5f7fec5afaea029f1aebcca62a
 
 # shellcheck source=../support/report.sh
 . "$REPO/tests/support/report.sh"
@@ -114,6 +116,26 @@ expect_eq "caddy tarball matches the pinned sha256" "$CADDY_SHA" \
   "$(sha256sum "$WORK/caddy.tgz" | cut -d' ' -f1)"
 tar xzf "$WORK/caddy.tgz" -C "$WORK" caddy
 install -m 0755 -o root -g root "$WORK/caddy" /usr/local/bin/caddy
+
+# The dialect floor, as a second parser. The proxy above is 2.11.4; README
+# promises everything VIDE renders is valid Caddy 2.6.2 — the version a stock
+# Debian/Ubuntu `apt-get install caddy` provides — and a newer parser ACCEPTS
+# what 2.6.2 refuses. stream_close_delay rode exactly that gap onto a live box
+# on 2026-08-09 and failed the operator's entire config at startup, because no
+# tier had ever handed the render to the parser the promise names. caddy-floor
+# never serves a request: floor_valid parses the operator's whole Caddyfile —
+# imports and all — everywhere the gate just changed it.
+curl -sL -o "$WORK/caddy-floor.tgz" \
+  "https://github.com/caddyserver/caddy/releases/download/v$CADDY_FLOOR_VER/caddy_${CADDY_FLOOR_VER}_linux_amd64.tar.gz"
+expect_eq "floor caddy tarball matches the pinned sha256" "$CADDY_FLOOR_SHA" \
+  "$(sha256sum "$WORK/caddy-floor.tgz" | cut -d' ' -f1)"
+mkdir -p "$WORK/floor"
+tar xzf "$WORK/caddy-floor.tgz" -C "$WORK/floor" caddy
+install -m 0755 -o root -g root "$WORK/floor/caddy" /usr/local/bin/caddy-floor
+floor_valid() { # <name> — parse the operator's ENTIRE config with the floor parser
+  expect_ok "$1 (caddy $CADDY_FLOOR_VER)" \
+    /usr/local/bin/caddy-floor validate --config /etc/caddy/Caddyfile --adapter caddyfile
+}
 useradd --system -M -d /var/lib/caddy -s /usr/sbin/nologin caddy 2>/dev/null
 install -d -o caddy -g caddy -m 0750 /var/lib/caddy /etc/caddy
 cat > /etc/systemd/system/caddy.service <<'UNIT'
@@ -422,6 +444,7 @@ echo "== 4. crown assertion: a whitelisted email actually gets the IDE =========
 
 # The operator pastes VIDE's emitted text verbatim — no harness edits.
 sed -n '/^# --- VIDE/,$p' "$INSTALL_OUT" >> /etc/caddy/Caddyfile
+floor_valid "the pasted first-install config parses on the dialect floor"
 systemctl reload caddy.service || systemctl restart caddy.service
 retry_until 20 curl -sk "https://127.0.0.1/" -o /dev/null
 CA=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
@@ -637,6 +660,7 @@ VIDE_CODE_SERVER_PIN_LATEST=1 VIDE_SSO_ISSUER_URL="$IDP_ISSUER" \
   --sso-allow bob@example.test </dev/null >"$WORK/install2.out" 2>"$WORK/install2.err"
 expect_eq "second sso install exits 0 (joins the existing proxy)" 0 "$?"
 sed -n '/^# --- VIDE/,$p' "$WORK/install2.out" >> /etc/caddy/Caddyfile
+floor_valid "the two-instance config parses on the dialect floor"
 systemctl reload caddy.service
 sleep 1
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-redirs 5 -L \
@@ -705,6 +729,7 @@ else
   bad "fleet-exit revoke did not propagate — fsnotify missed the rename (use --force-restart)"
 fi
 vide allow alice@example.test "$U1" >/dev/null 2>&1   # restore for the rotate row
+floor_valid "re-rendered allow-list bodies parse on the dialect floor"
 
 # ---- 12. rotate-sso: the fleet-wide kill switch --------------------------------
 echo
@@ -1380,6 +1405,7 @@ expect_fail "...and VIDE's render was restored over the edit" \
 retry_until 20 curl -sf --max-time 5 "http://127.0.0.1:4180/ping" -o /dev/null
 expect_ok "the gate is healthy after both levers" \
   curl -sf --max-time 5 "http://127.0.0.1:4180/ping" -o /dev/null
+floor_valid "the upgraded fleet's config parses on the dialect floor"
 
 # ---- 16b. the CVE floor, on a box seeded BELOW it ------------------------------
 echo
@@ -1678,6 +1704,7 @@ expect_ok "the imported caddy body still EXISTS (never delete: a dangling import
 expect_contains "…and is a 410 tombstone" "respond" "$(cat "/etc/vide/sso/caddy/$U2.caddy")"
 expect_ok "caddy still loads its config after the destroy" \
   /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+floor_valid "the tombstoned config parses on the dialect floor"
 expect_fail "the allow-list is gone" test -e "/etc/vide/sso/allowlists/$U2"
 expect_ok "the destroyed user's \$HOME survives" test -d "/home/$U2"
 expect_ok "the shared proxy SURVIVES the last-but-one instance destroy (durable singleton)" \

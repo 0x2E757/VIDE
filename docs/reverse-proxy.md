@@ -31,15 +31,24 @@ per-instance email allow-list (`vide allow` / `vide revoke`).
 
 ## The four invariants
 
-1. **Survival directives — `stream_close_delay` + `flush_interval -1`.**
-   A bare `reverse_proxy 127.0.0.1:<port>` proxies WebSockets fine *on first
-   connect*, so it demos perfectly — but Caddy closes every streaming WebSocket
-   on each `caddy reload`, including reloads triggered by **unrelated sites** in
-   a shared Caddy config. Without `stream_close_delay` your integrated terminal
-   and the extension host drop whenever the operator (or automation) reloads
-   Caddy, with no error the user can attribute. (ACME cert renewal itself swaps
-   the cert without tearing down streams, so it is reloads — not renewals — that
-   bite.) The generated snippet bakes both directives in.
+1. **`flush_interval -1` baked in; `stream_close_delay` deliberately not.**
+   A bare `reverse_proxy 127.0.0.1:<port>` buffers responses, so interactive
+   terminal output stalls — the generated snippet bakes `flush_interval -1` in.
+   The other survival directive stays out. Caddy closes every streaming
+   WebSocket on each `caddy reload` — including reloads triggered by
+   **unrelated sites** in a shared Caddy config — and `stream_close_delay` is
+   what prevents that; but it exists only from Caddy 2.7.0, and what VIDE
+   renders stays inside the 2.6.2 dialect a stock Debian/Ubuntu
+   `apt-get install caddy` provides, where one unknown subdirective fails your
+   *entire* config at startup (measured on a live box, 2026-08-09). So expect
+   terminals and the extension host to drop whenever Caddy reloads, with no
+   error the user can attribute; ACME cert renewal swaps certs without tearing
+   down streams, so it is reloads — not renewals — that bite. In password mode
+   the pasted block is yours: on Caddy >= 2.7, add `stream_close_delay 30m`
+   beside `flush_interval` and reloads stop dropping streams. In SSO mode the
+   body is VIDE-owned and re-rendered by converges, so a hand-added directive
+   does not survive — and `vide allow`/`revoke` reload Caddy themselves, so
+   under SSO a whitelist change drops the fleet's live terminals.
 
 2. **Secure context (valid end-to-end HTTPS) is mandatory.**
    Outside a secure context code-server silently disables clipboard, webviews,
@@ -76,7 +85,8 @@ port previews.
 vide.example.com {
     reverse_proxy 127.0.0.1:9797 {
         # Do NOT add `header_up Host ...` (breaks the WebSocket handshake).
-        stream_close_delay 30m
+        # On Caddy >= 2.7 you may add `stream_close_delay 30m` here (see
+        # invariant 1); the rendered snippet itself stays 2.6.2-valid.
         flush_interval -1
     }
 }
@@ -84,8 +94,9 @@ vide.example.com {
 
 ## SSO mode: what changes at the seam
 
-The four invariants above hold unchanged (the generated body bakes the survival
-directives in), but the pasted block is different — and pasted **once**:
+The four invariants above hold unchanged (the generated body bakes
+`flush_interval -1` in), but the pasted block is different — and pasted
+**once**:
 
 - The per-instance site block's whole body is a single `import` of a VIDE-owned
   file under `<sso_dir>/caddy/`. `vide allow`/`vide revoke` rewrite that
