@@ -356,8 +356,8 @@ def group_writer_uids(gid: int) -> frozenset[int] | None:
     else can write". Debian and Ubuntu default to a umask of 002 AND to
     user-private groups, so a plain `git clone` produces a 0775 tree owned by
     `alice:alice` — group-writable by a group whose only member is alice. A gate
-    that refused 0o020 outright would refuse the README's own first command on a
-    stock box, which is the exact outcome such a gate exists to avoid.
+    that refused 0o020 outright would refuse the README's own quick-start clone
+    on a stock box, which is the exact outcome such a gate exists to avoid.
 
     Both halves are needed: gr_mem lists SUPPLEMENTARY members only, so a second
     account carrying the gid as its primary would be invisible in it."""

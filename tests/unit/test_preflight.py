@@ -111,7 +111,7 @@ class TestCheckoutGate(unittest.TestCase):
     root, and every key in the file is injected into the environment each root
     child inherits — so whoever can write the tree has root at the operator's
     next converge. The predicate is deliberately NOT
-    'root-owned' — that would refuse the README's own first command — but
+    'root-owned' — that would refuse the README's own quick-start clone — but
     'writable only by principals already entitled to root'."""
 
     def _gate(self, repo: Path, *, uids=frozenset({0}), dry_run=False,
@@ -225,8 +225,8 @@ class TestCheckoutGate(unittest.TestCase):
 
         Debian and Ubuntu default to umask 002 and to user-private groups, so a
         plain `git clone` produces a 0775 tree owned by `alice:alice`. A gate
-        refusing `mode & 0o022` would refuse the README's own first command on a
-        stock box — measured on a real box, not reasoned about."""
+        refusing `mode & 0o022` would refuse the README's own quick-start clone
+        on a stock box — measured on a real box, not reasoned about."""
         with tempfile.TemporaryDirectory() as td:
             repo = self._tree(td)
             uid = repo.stat().st_uid

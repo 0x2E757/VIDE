@@ -12,6 +12,7 @@ expect breaking changes between commits and no guaranteed upgrade path. Run it
 on a box you can reprovision.
 
 ```bash
+command -v git >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y git; }
 sudo git clone https://github.com/0x2E757/VIDE /opt/vide-src
 cd /opt/vide-src
 sudo ./install.sh                 # interactive terminal → the curses wizard
@@ -298,10 +299,13 @@ tests/manual/           # the two human gates: wizard rendering, real-Google SSO
   `debootstrap --variant=minbase` or a minimal container image may lack `openssl`
   or `iproute2`.
 - **Installed for you** if absent: `python3` (by `install.sh`, before anything
-  else runs), then `argon2`, `curl`, `git`, `ca-certificates`, `sudo`, and
-  `libatomic1` (pnpm's standalone binary links against it; Node does not, so a box
-  without it installs Node and then fails at `pnpm --version`. It is
-  `Priority: optional` and absent from minimal Debian/Ubuntu images).
+  else runs), then `argon2`, `curl`, `git` (also installed by the quick start's
+  own first line when absent — a stock cloud image may arrive without it, and
+  `install.sh` cannot install the tool that fetches `install.sh`),
+  `ca-certificates`, `sudo`, and `libatomic1` (pnpm's standalone binary links
+  against it; Node does not, so a box without it installs Node and then fails
+  at `pnpm --version`. It is `Priority: optional` and absent from minimal
+  Debian/Ubuntu images).
   `apt-get` is invoked only for these — it is never probed for separately,
   because the Debian/Ubuntu gate above already vouches for it.
 

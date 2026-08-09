@@ -640,7 +640,7 @@ prove "the checkout gate stops refusing a world-writable path" \
 # is the predicate the plan originally specified, and it is wrong in the one
 # direction that gets a security control deleted rather than fixed: Debian and
 # Ubuntu default to umask 002 AND user-private groups, so it refuses a plain
-# `git clone` — the README's own first command — on a stock box.
+# `git clone` — the very clone the README's quick start runs — on a stock box.
 prove "the checkout gate refuses ordinary user-private-group clones" \
   "tests.unit.test_preflight.TestCheckoutGate.test_a_user_private_group_is_NOT_refused" \
   's|            writers = group_writers(f.gid)|            writers = frozenset({-1})|' \

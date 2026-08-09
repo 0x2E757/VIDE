@@ -167,8 +167,8 @@ def checkout_gate(repo_dir: Path, *, dry_run: bool, rep: Reporter,
         Deliberately NOT `mode & 0o022`: Debian and Ubuntu default to umask 002
         AND to user-private groups, so a plain `git clone` yields a 0775 tree
         owned by `alice:alice` — group-writable by a group containing only
-        alice. Refusing that would refuse the documented first command on a stock
-        box. The real question is whether any uid OUTSIDE the trusted set can
+        alice. Refusing that would refuse the documented quick-start clone on a
+        stock box. The real question is whether any uid OUTSIDE the trusted set can
         write, so the group is resolved rather than assumed."""
         if f.mode & 0o002:
             return f"is world-writable (mode {f.mode:04o})"
