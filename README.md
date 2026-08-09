@@ -15,6 +15,8 @@ on a box you can reprovision.
 # prerequisites — git fetches this tree; Caddy is the reverse proxy SSO mode requires
 command -v git   >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y git; }
 command -v caddy >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y caddy; }
+
+# the install itself — clone this tree, then run the installer from inside it
 sudo git clone https://github.com/0x2E757/VIDE /opt/vide-src
 cd /opt/vide-src
 sudo ./install.sh                 # interactive terminal → the curses wizard
